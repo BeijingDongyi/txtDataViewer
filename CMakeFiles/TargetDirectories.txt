@@ -1,0 +1,4 @@
+/home/dykj/UI/txtDataViewer_3_14/CMakeFiles/main.dir
+/home/dykj/UI/txtDataViewer_3_14/CMakeFiles/edit_cache.dir
+/home/dykj/UI/txtDataViewer_3_14/CMakeFiles/rebuild_cache.dir
+/home/dykj/UI/txtDataViewer_3_14/CMakeFiles/main_autogen.dir
