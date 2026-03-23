@@ -16,7 +16,7 @@ make
 
 ## 步骤 4：创建桌面快捷方式
 sudo gedit /usr/share/applications/myscript.desktop
-# 4.2 粘贴以下内容（关键修正版）
+# 4.2 粘贴以下内容
 [Desktop Entry]
 Type=Application
 Name=数据分析
