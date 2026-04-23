@@ -359,10 +359,16 @@ void PlotWidget::resetView()
     m_isDragging = false;
     m_dragStart = QPoint();
     m_dragEnd = QPoint();
+    
+    // 新增：清空所有缓存，强制重新绘制坐标轴和曲线
+    m_backgroundCache = QPixmap();
     m_curveCache = QPixmap();
+    m_legendCache = QPixmap();
+    
     m_tipTextRects.clear();
     update();
 }
+
 
 void PlotWidget::calculateOriginalRange()
 {
@@ -445,7 +451,11 @@ void PlotWidget::updateBackgroundCache()
     const int tickCount = 10;
     double xRange = m_currentXMax - m_currentXMin;
     double yRange = m_currentYMax - m_currentYMin;
-    if (xRange <= 0 || yRange <= 0) return;
+    
+    // 修复：范围无效时直接返回，不绘制错误刻度
+    if (xRange <= 1e-8 || yRange <= 1e-8) {
+        return;
+    }
 
     double xTickStep = xRange / tickCount;
     for (int i = 0; i <= tickCount; ++i) {
@@ -673,32 +683,50 @@ void PlotWidget::mouseMoveEvent(QMouseEvent *event)
     }
     m_hoveredCurveIdx = hoveredIdx;
 
-    if (m_isDragging && event->buttons() & Qt::LeftButton) {
-        m_dragEnd = event->pos();
-        int marginL, marginT, marginR, marginB, plotW, plotH;
-        getPlotRect(marginL, marginT, marginR, marginB, plotW, plotH);
-        update(QRect(marginL, marginT, plotW, plotH)); 
-    } else if (m_mouseInWidget || rect().contains(oldMousePos)) {
-        int marginL, marginT, marginR, marginB, plotW, plotH;
-        getPlotRect(marginL, marginT, marginR, marginB, plotW, plotH);
-        update(QRect(marginL - 80, marginT, width() - marginL - marginR + 300, height() - marginT - marginB));
-    }
-    QWidget::mouseMoveEvent(event);
-}
-
-void PlotWidget::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton && m_isDragging) {
-        m_isDragging = false;
-        QPoint dragEnd = event->pos();
-
+    if (m_isDragging && event->buttons() & Qt::LeftButton)
+    {
         int marginL, marginT, marginR, marginB, plotW, plotH;
         getPlotRect(marginL, marginT, marginR, marginB, plotW, plotH);
         QRect plotRect(marginL, marginT, plotW, plotH);
 
+        // 【核心修复】把鼠标位置限制在 plotRect 内部
+        QPoint boundedPos = event->pos();
+        boundedPos.setX(qBound(plotRect.left(), boundedPos.x(), plotRect.right()));
+        boundedPos.setY(qBound(plotRect.top(), boundedPos.y(), plotRect.bottom()));
+        m_dragEnd = boundedPos;
+
+        update(plotRect);
+    }
+    else if (m_mouseInWidget || rect().contains(oldMousePos))
+    {
+        int marginL, marginT, marginR, marginB, plotW, plotH;
+        getPlotRect(marginL, marginT, marginR, marginB, plotW, plotH);
+        update(QRect(marginL - 80, marginT, width() - marginL - marginR + 300, height() - marginT - marginB));
+    }
+
+    QWidget::mouseMoveEvent(event);
+}
+
+
+void PlotWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && m_isDragging)
+    {
+        m_isDragging = false;
+        int marginL, marginT, marginR, marginB, plotW, plotH;
+        getPlotRect(marginL, marginT, marginR, marginB, plotW, plotH);
+        QRect plotRect(marginL, marginT, plotW, plotH);
+
+        // 【核心修复】终点强制限制在绘布内
+        QPoint dragEnd = event->pos();
+        dragEnd.setX(qBound(plotRect.left(), dragEnd.x(), plotRect.right()));
+        dragEnd.setY(qBound(plotRect.top(), dragEnd.y(), plotRect.bottom()));
+
         QPoint start = plotRect.contains(m_dragStart) ? m_dragStart : plotRect.center();
         QPoint end = plotRect.contains(dragEnd) ? dragEnd : plotRect.center();
-        if (qAbs(end.x() - start.x()) < 5 || qAbs(end.y() - start.y()) < 5) {
+
+        if (qAbs(end.x() - start.x()) < 5 || qAbs(end.y() - start.y()) < 5)
+        {
             m_dragStart = QPoint();
             m_dragEnd = QPoint();
             update();
@@ -710,6 +738,7 @@ void PlotWidget::mouseReleaseEvent(QMouseEvent *event)
 
         double xRange = m_currentXMax - m_currentXMin;
         double yRange = m_currentYMax - m_currentYMin;
+
         double newXMin = m_currentXMin + ((start.x() - marginL) / (double)plotW) * xRange;
         double newXMax = m_currentXMin + ((end.x() - marginL) / (double)plotW) * xRange;
         double newYMax = m_currentYMin + ((plotH - (start.y() - marginT)) / (double)plotH) * yRange;
@@ -721,12 +750,14 @@ void PlotWidget::mouseReleaseEvent(QMouseEvent *event)
         m_currentYMax = qMax(newYMin, newYMax);
 
         double minRange = 0.001;
-        if (m_currentXMax - m_currentXMin < minRange) {
+        if (m_currentXMax - m_currentXMin < minRange)
+        {
             double midX = (m_currentXMax + m_currentXMin) / 2;
             m_currentXMin = midX - minRange/2;
             m_currentXMax = midX + minRange/2;
         }
-        if (m_currentYMax - m_currentYMin < minRange) {
+        if (m_currentYMax - m_currentYMin < minRange)
+        {
             double midY = (m_currentYMax + m_currentYMin) / 2;
             m_currentYMin = midY - minRange/2;
             m_currentYMax = midY + minRange/2;
@@ -734,12 +765,14 @@ void PlotWidget::mouseReleaseEvent(QMouseEvent *event)
 
         m_dragStart = QPoint();
         m_dragEnd = QPoint();
-        m_backgroundCache = QPixmap(); 
+        m_backgroundCache = QPixmap();
         m_curveCache = QPixmap();
         update();
     }
+
     QWidget::mouseReleaseEvent(event);
 }
+
 
 void PlotWidget::paintEvent(QPaintEvent*)
 {
