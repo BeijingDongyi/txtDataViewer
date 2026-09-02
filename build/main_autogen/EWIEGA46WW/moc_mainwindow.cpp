@@ -1,18 +1,19 @@
 /****************************************************************************
 ** Meta object code from reading C++ file 'mainwindow.h'
 **
-** Created by: The Qt Meta Object Compiler version 67 (Qt 5.12.8)
+** Created by: The Qt Meta Object Compiler version 67 (Qt 5.15.3)
 **
 ** WARNING! All changes made in this file will be lost!
 *****************************************************************************/
 
-#include "../../mainwindow.h"
+#include <memory>
+#include "../../../mainwindow.h"
 #include <QtCore/qbytearray.h>
 #include <QtCore/qmetatype.h>
 #if !defined(Q_MOC_OUTPUT_REVISION)
 #error "The header file 'mainwindow.h' doesn't include <QObject>."
 #elif Q_MOC_OUTPUT_REVISION != 67
-#error "This file was generated using the moc from 5.12.8. It"
+#error "This file was generated using the moc from 5.15.3. It"
 #error "cannot be used with the include files from this version of Qt."
 #error "(The moc has changed too much.)"
 #endif
@@ -69,7 +70,7 @@ void CheckableHeaderView::qt_static_metacall(QObject *_o, QMetaObject::Call _c, 
 {
     if (_c == QMetaObject::InvokeMetaMethod) {
         auto *_t = static_cast<CheckableHeaderView *>(_o);
-        Q_UNUSED(_t)
+        (void)_t;
         switch (_id) {
         case 0: _t->checkStateChanged((*reinterpret_cast< int(*)>(_a[1])),(*reinterpret_cast< bool(*)>(_a[2]))); break;
         default: ;
@@ -87,7 +88,7 @@ void CheckableHeaderView::qt_static_metacall(QObject *_o, QMetaObject::Call _c, 
 }
 
 QT_INIT_METAOBJECT const QMetaObject CheckableHeaderView::staticMetaObject = { {
-    &QHeaderView::staticMetaObject,
+    QMetaObject::SuperData::link<QHeaderView::staticMetaObject>(),
     qt_meta_stringdata_CheckableHeaderView.data,
     qt_meta_data_CheckableHeaderView,
     qt_static_metacall,
@@ -129,7 +130,7 @@ int CheckableHeaderView::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
 // SIGNAL 0
 void CheckableHeaderView::checkStateChanged(int _t1, bool _t2)
 {
-    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)) };
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(std::addressof(_t1))), const_cast<void*>(reinterpret_cast<const void*>(std::addressof(_t2))) };
     QMetaObject::activate(this, &staticMetaObject, 0, _a);
 }
 struct qt_meta_stringdata_BigDataTableModel_t {
@@ -168,14 +169,14 @@ static const uint qt_meta_data_BigDataTableModel[] = {
 
 void BigDataTableModel::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
 {
-    Q_UNUSED(_o);
-    Q_UNUSED(_id);
-    Q_UNUSED(_c);
-    Q_UNUSED(_a);
+    (void)_o;
+    (void)_id;
+    (void)_c;
+    (void)_a;
 }
 
 QT_INIT_METAOBJECT const QMetaObject BigDataTableModel::staticMetaObject = { {
-    &QAbstractTableModel::staticMetaObject,
+    QMetaObject::SuperData::link<QAbstractTableModel::staticMetaObject>(),
     qt_meta_stringdata_BigDataTableModel.data,
     qt_meta_data_BigDataTableModel,
     qt_static_metacall,
@@ -254,7 +255,7 @@ void PlotWidget::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, 
 {
     if (_c == QMetaObject::InvokeMetaMethod) {
         auto *_t = static_cast<PlotWidget *>(_o);
-        Q_UNUSED(_t)
+        (void)_t;
         switch (_id) {
         case 0: _t->curveInvertClicked((*reinterpret_cast< int(*)>(_a[1]))); break;
         case 1: _t->curveVisibilityChanged((*reinterpret_cast< int(*)>(_a[1])),(*reinterpret_cast< bool(*)>(_a[2]))); break;
@@ -280,7 +281,7 @@ void PlotWidget::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, 
 }
 
 QT_INIT_METAOBJECT const QMetaObject PlotWidget::staticMetaObject = { {
-    &QWidget::staticMetaObject,
+    QMetaObject::SuperData::link<QWidget::staticMetaObject>(),
     qt_meta_stringdata_PlotWidget.data,
     qt_meta_data_PlotWidget,
     qt_static_metacall,
@@ -322,19 +323,19 @@ int PlotWidget::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
 // SIGNAL 0
 void PlotWidget::curveInvertClicked(int _t1)
 {
-    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)) };
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(std::addressof(_t1))) };
     QMetaObject::activate(this, &staticMetaObject, 0, _a);
 }
 
 // SIGNAL 1
 void PlotWidget::curveVisibilityChanged(int _t1, bool _t2)
 {
-    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)) };
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(std::addressof(_t1))), const_cast<void*>(reinterpret_cast<const void*>(std::addressof(_t2))) };
     QMetaObject::activate(this, &staticMetaObject, 1, _a);
 }
 struct qt_meta_stringdata_PlotDialog_t {
-    QByteArrayData data[9];
-    char stringdata0[127];
+    QByteArrayData data[11];
+    char stringdata0[166];
 };
 #define QT_MOC_LITERAL(idx, ofs, len) \
     Q_STATIC_BYTE_ARRAY_DATA_HEADER_INITIALIZER_WITH_OFFSET(len, \
@@ -351,12 +352,15 @@ QT_MOC_LITERAL(4, 43, 19), // "onApplyScaleClicked"
 QT_MOC_LITERAL(5, 63, 20), // "onCurveInvertClicked"
 QT_MOC_LITERAL(6, 84, 8), // "curveIdx"
 QT_MOC_LITERAL(7, 93, 16), // "onHideAllClicked"
-QT_MOC_LITERAL(8, 110, 16) // "onShowAllClicked"
+QT_MOC_LITERAL(8, 110, 16), // "onShowAllClicked"
+QT_MOC_LITERAL(9, 127, 18), // "onShiftLeftClicked"
+QT_MOC_LITERAL(10, 146, 19) // "onShiftRightClicked"
 
     },
     "PlotDialog\0onZoomInClicked\0\0onResetClicked\0"
     "onApplyScaleClicked\0onCurveInvertClicked\0"
-    "curveIdx\0onHideAllClicked\0onShowAllClicked"
+    "curveIdx\0onHideAllClicked\0onShowAllClicked\0"
+    "onShiftLeftClicked\0onShiftRightClicked"
 };
 #undef QT_MOC_LITERAL
 
@@ -366,7 +370,7 @@ static const uint qt_meta_data_PlotDialog[] = {
        8,       // revision
        0,       // classname
        0,    0, // classinfo
-       6,   14, // methods
+       8,   14, // methods
        0,    0, // properties
        0,    0, // enums/sets
        0,    0, // constructors
@@ -374,18 +378,22 @@ static const uint qt_meta_data_PlotDialog[] = {
        0,       // signalCount
 
  // slots: name, argc, parameters, tag, flags
-       1,    0,   44,    2, 0x08 /* Private */,
-       3,    0,   45,    2, 0x08 /* Private */,
-       4,    0,   46,    2, 0x08 /* Private */,
-       5,    1,   47,    2, 0x08 /* Private */,
-       7,    0,   50,    2, 0x08 /* Private */,
-       8,    0,   51,    2, 0x08 /* Private */,
+       1,    0,   54,    2, 0x08 /* Private */,
+       3,    0,   55,    2, 0x08 /* Private */,
+       4,    0,   56,    2, 0x08 /* Private */,
+       5,    1,   57,    2, 0x08 /* Private */,
+       7,    0,   60,    2, 0x08 /* Private */,
+       8,    0,   61,    2, 0x08 /* Private */,
+       9,    0,   62,    2, 0x08 /* Private */,
+      10,    0,   63,    2, 0x08 /* Private */,
 
  // slots: parameters
     QMetaType::Void,
     QMetaType::Void,
     QMetaType::Void,
     QMetaType::Void, QMetaType::Int,    6,
+    QMetaType::Void,
+    QMetaType::Void,
     QMetaType::Void,
     QMetaType::Void,
 
@@ -396,7 +404,7 @@ void PlotDialog::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, 
 {
     if (_c == QMetaObject::InvokeMetaMethod) {
         auto *_t = static_cast<PlotDialog *>(_o);
-        Q_UNUSED(_t)
+        (void)_t;
         switch (_id) {
         case 0: _t->onZoomInClicked(); break;
         case 1: _t->onResetClicked(); break;
@@ -404,13 +412,15 @@ void PlotDialog::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, 
         case 3: _t->onCurveInvertClicked((*reinterpret_cast< int(*)>(_a[1]))); break;
         case 4: _t->onHideAllClicked(); break;
         case 5: _t->onShowAllClicked(); break;
+        case 6: _t->onShiftLeftClicked(); break;
+        case 7: _t->onShiftRightClicked(); break;
         default: ;
         }
     }
 }
 
 QT_INIT_METAOBJECT const QMetaObject PlotDialog::staticMetaObject = { {
-    &QDialog::staticMetaObject,
+    QMetaObject::SuperData::link<QDialog::staticMetaObject>(),
     qt_meta_stringdata_PlotDialog.data,
     qt_meta_data_PlotDialog,
     qt_static_metacall,
@@ -438,13 +448,13 @@ int PlotDialog::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
     if (_id < 0)
         return _id;
     if (_c == QMetaObject::InvokeMetaMethod) {
-        if (_id < 6)
+        if (_id < 8)
             qt_static_metacall(this, _c, _id, _a);
-        _id -= 6;
+        _id -= 8;
     } else if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
-        if (_id < 6)
+        if (_id < 8)
             *reinterpret_cast<int*>(_a[0]) = -1;
-        _id -= 6;
+        _id -= 8;
     }
     return _id;
 }
@@ -514,7 +524,7 @@ void MainWindow::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, 
 {
     if (_c == QMetaObject::InvokeMetaMethod) {
         auto *_t = static_cast<MainWindow *>(_o);
-        Q_UNUSED(_t)
+        (void)_t;
         switch (_id) {
         case 0: _t->loadTxt(); break;
         case 1: _t->plotSelectedCols(); break;
@@ -528,7 +538,7 @@ void MainWindow::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, 
 }
 
 QT_INIT_METAOBJECT const QMetaObject MainWindow::staticMetaObject = { {
-    &QMainWindow::staticMetaObject,
+    QMetaObject::SuperData::link<QMainWindow::staticMetaObject>(),
     qt_meta_stringdata_MainWindow.data,
     qt_meta_data_MainWindow,
     qt_static_metacall,

@@ -33,13 +33,14 @@
 #include <QModelIndex>
 #include <QShortcut>
 #include <QMap>
+#include <QHash>
 #include <QComboBox>
 #include <QDoubleValidator>
+#include <QPointer>
 
 struct PlotData {
     int colIndex;
     int rawColNum;
-    QVector<double> xData;
     QVector<double> yData;
     QString colLabel;
     int groupIndex;
@@ -82,7 +83,7 @@ class BigDataTableModel : public QAbstractTableModel
 public:
     explicit BigDataTableModel(QObject *parent = nullptr);
 
-    void setData(const QVector<QVector<QString>>& data, const QVector<int>& redColStartRows, const QVector<int>& displayColNums);
+    void setData(const QVector<QVector<QString>>* data, const QVector<int>& redColStartRows, const QVector<int>& displayColNums);
     void setColGroupMap(const QMap<int, int>& map);
     QString getData(int row, int col) const;
     QString getColumnLabel(int column) const;
@@ -93,7 +94,7 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
 private:
-    QVector<QVector<QString>> m_rawData;
+    const QVector<QVector<QString>>* m_rawData;
     QVector<int> m_redColStartRows;
     QVector<int> m_displayColNums;
     QMap<int, int> m_colGroupMap;
@@ -105,12 +106,13 @@ class PlotWidget : public QWidget
 public:
     explicit PlotWidget(QWidget *parent = nullptr);
 
-    void setData(const QList<PlotData>& data);
+    void setData(const QList<PlotData>& data, bool resetCurveOptions = true);
     void resetView();
     void setCurveYInverted(int curveIdx, bool inverted);
     void setCurveYScale(int curveIdx, double scale);
     void setCurveVisible(int curveIdx, bool visible);
     void setAllCurvesVisible(bool visible);
+    void setZoomEnabled(bool enabled);
     QStringList getCurveLabels() const;
 
     QList<PlotData> m_plotData;
@@ -130,22 +132,20 @@ private:
     void updateBackgroundCache();
     void updateCurveCache();
     void updateLegendCache();
-    double interpolateY(const QVector<double>& xData, const QVector<double>& yData, double targetX);
+    double interpolateY(const QVector<double>& yData, double targetX);
     void calculateOriginalRange();
     void getPlotRect(int& marginL, int& marginT, int& marginR, int& marginB, int& plotW, int& plotH);
     
-    // 修改：替换为特征点保留算法
-    QVector<QPointF> sampleData(const QVector<double>& xData, const QVector<double>& yData, double pixelEpsilon);
-    void douglasPeucker(const QVector<QPointF>& points, int start, int end, double epsilon, QVector<QPointF>& result);
-    
-    double processYValue(int curveIdx, double y);
+    double processYValue(int curveIdx, double y) const;
     void updatePlotRange();
+    QPolygonF buildVisiblePolyline(int curveIdx, const PlotData& data, const QRectF& plotRect, double xRange, double yRange) const;
 
     QPoint m_mousePos;
     bool m_mouseInWidget;
     QPoint m_dragStart;
     QPoint m_dragEnd;
     bool m_isDragging;
+    bool m_zoomEnabled;
     double m_originalXMin, m_originalXMax;
     double m_currentXMin, m_currentXMax;
     double m_originalYMin, m_originalYMax;
@@ -169,7 +169,13 @@ class PlotDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit PlotDialog(QWidget *parent = nullptr, const QList<PlotData>& plotData = QList<PlotData>());
+    explicit PlotDialog(QWidget *parent = nullptr, const QList<PlotData>& plotData = QList<PlotData>(),
+                        const QVector<QVector<double>>* sourceNumericData = nullptr,
+                        const QVector<QVector<uchar>>* sourceNumericValidData = nullptr,
+                        const QVector<int>* sourceCols = nullptr,
+                        const QHash<int, int>* sourceColIndexMap = nullptr,
+                        const QMap<int, int>* colGroupMap = nullptr,
+                        int startRow = 0, int endRow = -1);
     ~PlotDialog();
 
 private slots:
@@ -179,18 +185,32 @@ private slots:
     void onCurveInvertClicked(int curveIdx);
     void onHideAllClicked();
     void onShowAllClicked();
+    void onShiftLeftClicked();
+    void onShiftRightClicked();
 
 private:
+    void shiftCurves(int delta);
+    bool buildShiftedPlotData(int delta, QList<PlotData>& shiftedData, QString& errorMessage) const;
+
     PlotWidget* m_plotWidget;
     QPushButton* m_zoomBtn;
     QPushButton* m_resetBtn;
     QPushButton* m_hideAllBtn;
     QPushButton* m_showAllBtn;
+    QPushButton* m_shiftLeftBtn;
+    QPushButton* m_shiftRightBtn;
     bool m_zoomMode;
     QComboBox* m_curveCombo;
     QLineEdit* m_scaleEdit;
     QPushButton* m_applyScaleBtn;
     QLabel* m_scaleLabel;
+    const QVector<QVector<double>>* m_sourceNumericData;
+    const QVector<QVector<uchar>>* m_sourceNumericValidData;
+    const QVector<int>* m_sourceCols;
+    const QHash<int, int>* m_sourceColIndexMap;
+    const QMap<int, int>* m_colGroupMap;
+    int m_startRow;
+    int m_endRow;
 };
 
 class MainWindow : public QMainWindow
@@ -221,14 +241,19 @@ private:
     QPushButton* m_loadBtn;
     QPushButton* m_plotBtn;
     QPushButton* m_multiPlotBtn;
+    QCheckBox* m_jumpCheckBox;
+    QSpinBox* m_jumpSpinBox;
     QSpinBox* m_startRowSpin;
     QSpinBox* m_endRowSpin; 
     QLineEdit* m_colInputEdit;
     QLabel* m_colInputLbl;
     QVector<QVector<QString>> m_rawData;
+    QVector<QVector<double>> m_numericData;
+    QVector<QVector<uchar>> m_numericValidData;
     QVector<int> m_selectedReadCols;
+    QHash<int, int> m_colIndexByRawNum;
     QMap<int, int> m_colToGroupIndex;
     QMap<int, int> m_colBindMap;
-    PlotDialog* m_currentPlotDialog;
+    QPointer<PlotDialog> m_currentPlotDialog;
 };
 #endif // MAINWINDOW_H

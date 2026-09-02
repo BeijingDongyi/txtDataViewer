@@ -4,7 +4,6 @@
 #include <QTextStream>
 #include <QMessageBox>
 #include <QHeaderView>
-#include <QRegExp>
 #include <QDir>
 #include <cmath>
 #include <QElapsedTimer>
@@ -13,8 +12,41 @@
 #include <algorithm>
 #include <QStringList>
 #include <QShortcut>
+#include <QTimer>
+#include <QtGlobal>
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+#define TXT_VIEWER_SKIP_EMPTY_PARTS Qt::SkipEmptyParts
+#else
+#define TXT_VIEWER_SKIP_EMPTY_PARTS QString::SkipEmptyParts
+#endif
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QStringConverter>
+#include <QRegularExpression>
+#else
+#include <QRegExp>
+#endif
 
 static int plotWindowCounter = 0;
+
+static int textWidth(const QFontMetrics& fm, const QString& text)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
+    return fm.horizontalAdvance(text);
+#else
+    return fm.width(text);
+#endif
+}
+
+static const QVector<QColor>& groupColors()
+{
+    static const QVector<QColor> colors = {
+        QColor(255, 255, 255), QColor(255, 230, 200), QColor(255, 230, 255),
+        QColor(255, 255, 200), QColor(240, 230, 255), QColor(255, 245, 215), QColor(225, 245, 245)
+    };
+    return colors;
+}
 
 CheckableHeaderView::CheckableHeaderView(QMap<int, int>* colGroupMap, QVector<int>* displayColNums,
                                          Qt::Orientation orientation, QWidget *parent)
@@ -121,16 +153,17 @@ QColor CheckableHeaderView::getGroupHeaderBgColor(int logicalIndex) const
     int colNum = m_displayColNums->value(logicalIndex, 0);
     int groupIdx = m_colGroupMap->value(colNum, 0);
     
-    QList<QColor> groupColors = {
-        QColor(255, 255, 255), QColor(255, 230, 200), QColor(255, 230, 255),
-        QColor(255, 255, 200), QColor(240, 230, 255), QColor(255, 245, 215), QColor(225, 245, 245)
-    };
-    return groupIdx < groupColors.size() ? groupColors[groupIdx] : QColor(240,240,240);
+    const auto& colors = groupColors();
+    return groupIdx < colors.size() ? colors[groupIdx] : QColor(240,240,240);
 }
 
-BigDataTableModel::BigDataTableModel(QObject *parent) : QAbstractTableModel(parent) {}
+BigDataTableModel::BigDataTableModel(QObject *parent)
+    : QAbstractTableModel(parent)
+    , m_rawData(nullptr)
+{
+}
 
-void BigDataTableModel::setData(const QVector<QVector<QString>>& data, const QVector<int>& redColStartRows, const QVector<int>& displayColNums)
+void BigDataTableModel::setData(const QVector<QVector<QString>>* data, const QVector<int>& redColStartRows, const QVector<int>& displayColNums)
 {
     beginResetModel();
     m_rawData = data;
@@ -143,17 +176,17 @@ void BigDataTableModel::setColGroupMap(const QMap<int, int>& map) { m_colGroupMa
 
 QString BigDataTableModel::getData(int row, int col) const
 {
-    return (row >= 0 && row < m_rawData.size() && col >= 0 && col < m_rawData[row].size()) ? m_rawData[row][col] : "";
+    return (m_rawData && row >= 0 && row < m_rawData->size() && col >= 0 && col < (*m_rawData)[row].size()) ? (*m_rawData)[row][col] : "";
 }
 
 int BigDataTableModel::rowCount(const QModelIndex &parent) const
 {
-    return parent.isValid() ? 0 : m_rawData.size();
+    return (parent.isValid() || !m_rawData) ? 0 : m_rawData->size();
 }
 
 int BigDataTableModel::columnCount(const QModelIndex &parent) const
 {
-    return (parent.isValid() || m_rawData.isEmpty()) ? 0 : m_rawData[0].size();
+    return (parent.isValid() || !m_rawData || m_rawData->isEmpty()) ? 0 : (*m_rawData)[0].size();
 }
 
 QVariant BigDataTableModel::data(const QModelIndex &index, int role) const
@@ -170,11 +203,8 @@ QVariant BigDataTableModel::data(const QModelIndex &index, int role) const
     if (role == Qt::BackgroundRole) {
         int colNum = m_displayColNums.value(col, 0);
         int groupIdx = m_colGroupMap.value(colNum, 0);
-        QList<QColor> cellBgColors = {
-            QColor(255, 255, 255), QColor(255, 230, 200), QColor(255, 230, 255),
-            QColor(255, 255, 200), QColor(240, 230, 255), QColor(255, 245, 215), QColor(225, 245, 245)
-        };
-        return groupIdx < cellBgColors.size() ? cellBgColors[groupIdx] : QColor(Qt::white);
+        const auto& colors = groupColors();
+        return groupIdx < colors.size() ? colors[groupIdx] : QColor(Qt::white);
     }
     return QVariant();
 }
@@ -196,6 +226,7 @@ PlotWidget::PlotWidget(QWidget *parent)
     : QWidget(parent)
     , m_mouseInWidget(false)
     , m_isDragging(false)
+    , m_zoomEnabled(false)
     , m_originalXMin(0.0), m_originalXMax(10.0)
     , m_originalYMin(0.0), m_originalYMax(1.0)
     , m_currentXMin(0.0), m_currentXMax(10.0)
@@ -207,7 +238,18 @@ PlotWidget::PlotWidget(QWidget *parent)
     setAttribute(Qt::WA_OpaquePaintEvent);
 }
 
-double PlotWidget::processYValue(int curveIdx, double y)
+void PlotWidget::setZoomEnabled(bool enabled)
+{
+    m_zoomEnabled = enabled;
+    if (!m_zoomEnabled && m_isDragging) {
+        m_isDragging = false;
+        m_dragStart = QPoint();
+        m_dragEnd = QPoint();
+        update();
+    }
+}
+
+double PlotWidget::processYValue(int curveIdx, double y) const
 {
     if (curveIdx < 0 || curveIdx >= m_plotData.size()) return y;
     double scaledY = y * m_plotData[curveIdx].yScale;
@@ -268,78 +310,15 @@ QStringList PlotWidget::getCurveLabels() const
     return labels;
 }
 
-// 【新增】 Douglas-Peucker 算法实现
-void PlotWidget::douglasPeucker(const QVector<QPointF>& points, int start, int end, double epsilon, QVector<QPointF>& result)
-{
-    if (end <= start + 1) {
-        if (start == 0 && result.isEmpty()) result.append(points[start]);
-        result.append(points[end]);
-        return;
-    }
-
-    double maxDist = 0.0;
-    int maxIdx = start;
-
-    QPointF p1 = points[start];
-    QPointF p2 = points[end];
-    double lineLenSq = (p2.x() - p1.x()) * (p2.x() - p1.x()) + (p2.y() - p1.y()) * (p2.y() - p1.y());
-
-    for (int i = start + 1; i < end; ++i) {
-        double dist = 0.0;
-        if (lineLenSq < 1e-10) {
-            dist = sqrt(pow(points[i].x() - p1.x(), 2) + pow(points[i].y() - p1.y(), 2));
-        } else {
-            double t = ((points[i].x() - p1.x()) * (p2.x() - p1.x()) + (points[i].y() - p1.y()) * (p2.y() - p1.y())) / lineLenSq;
-            t = qBound(0.0, t, 1.0);
-            double projX = p1.x() + t * (p2.x() - p1.x());
-            double projY = p1.y() + t * (p2.y() - p1.y());
-            dist = sqrt(pow(points[i].x() - projX, 2) + pow(points[i].y() - projY, 2));
-        }
-
-        if (dist > maxDist) {
-            maxDist = dist;
-            maxIdx = i;
-        }
-    }
-
-    if (maxDist > epsilon) {
-        douglasPeucker(points, start, maxIdx, epsilon, result);
-        douglasPeucker(points, maxIdx, end, epsilon, result);
-    } else {
-        if (start == 0 && result.isEmpty()) result.append(points[start]);
-        result.append(points[end]);
-    }
-}
-
-// 【修改】 使用特征点提取算法替代简单抽样
-QVector<QPointF> PlotWidget::sampleData(const QVector<double>& xData, const QVector<double>& yData, double pixelEpsilon)
-{
-    QVector<QPointF> result;
-    int total = xData.size();
-    if (total < 2) {
-        for (int i = 0; i < total; ++i) result.append(QPointF(xData[i], yData[i]));
-        return result;
-    }
-
-    QVector<QPointF> points;
-    points.reserve(total);
-    for (int i = 0; i < total; ++i) {
-        points.append(QPointF(xData[i], yData[i]));
-    }
-
-    result.reserve(total);
-    douglasPeucker(points, 0, total - 1, pixelEpsilon, result);
-    
-    return result;
-}
-
-void PlotWidget::setData(const QList<PlotData>& data)
+void PlotWidget::setData(const QList<PlotData>& data, bool resetCurveOptions)
 {
     m_plotData = data;
-    for (auto& plotData : m_plotData) {
-        plotData.yInverted = false;
-        plotData.yScale = 1.0;
-        plotData.visible = true;
+    if (resetCurveOptions) {
+        for (auto& plotData : m_plotData) {
+            plotData.yInverted = false;
+            plotData.yScale = 1.0;
+            plotData.visible = true;
+        }
     }
     calculateOriginalRange();
     resetView();
@@ -384,8 +363,8 @@ void PlotWidget::calculateOriginalRange()
     for (int curveIdx = 0; curveIdx < m_plotData.size(); ++curveIdx) {
         if (!m_plotData[curveIdx].visible) continue;
         const auto& d = m_plotData[curveIdx];
-        if (d.xData.isEmpty() || d.yData.isEmpty()) continue;
-        for (double v : d.xData) xMax = qMax(xMax, v);
+        if (d.yData.isEmpty()) continue;
+        xMax = qMax(xMax, static_cast<double>(d.yData.size() - 1));
         for (double v : d.yData) {
             double processedY = processYValue(curveIdx, v);
             yMin = qMin(yMin, processedY);
@@ -407,7 +386,15 @@ void PlotWidget::calculateOriginalRange()
 
 void PlotWidget::getPlotRect(int& marginL, int& marginT, int& marginR, int& marginB, int& plotW, int& plotH)
 {
-    marginL = 100; marginT = 50; marginR = 200; marginB = 80;
+    QFont tickFont("Microsoft YaHei", 9, QFont::Normal);
+    QFont labelFont("Microsoft YaHei", 11, QFont::Bold);
+    QFontMetrics tickFm(tickFont);
+    QFontMetrics labelFm(labelFont);
+
+    marginL = qMax(110, tickFm.horizontalAdvance("-123456789") + labelFm.height() + 36);
+    marginT = qMax(50, labelFm.height() + 24);
+    marginR = 220;
+    marginB = qMax(100, tickFm.height() * 2 + labelFm.height() + 34);
     plotW = qMax(width() - marginL - marginR, 100);
     plotH = qMax(height() - marginT - marginB, 100);
 }
@@ -436,16 +423,20 @@ void PlotWidget::updateBackgroundCache()
     p.drawLine(marginL, h - marginB, w - marginR, h - marginB);
 
     QFont labelFont("Microsoft YaHei", 11, QFont::Bold);
+    QFont tickFont("Microsoft YaHei", 9, QFont::Normal);
+    QFontMetrics labelFm(labelFont);
+    QFontMetrics tickFm(tickFont);
+
     p.setFont(labelFont);
     p.setPen(QColor(30, 30, 30));
     p.save();
-    p.translate(marginL - 60, h / 2);
+    p.translate(labelFm.height() + 12, marginT + plotH / 2.0);
     p.rotate(-90);
-    p.drawText(0, 0, "Y轴：数值");
+    p.drawText(QRectF(-plotH / 2.0, 0, plotH, labelFm.height() + 6), Qt::AlignCenter, "Y轴：数值");
     p.restore();
-    p.drawText(w / 2 - 50, h - marginB + 30, "X轴：数据索引");
+    p.drawText(QRectF(marginL, h - marginB + tickFm.height() + 20, plotW, labelFm.height() + 8),
+               Qt::AlignCenter, "X轴：数据索引");
 
-    QFont tickFont("Microsoft YaHei", 9, QFont::Normal);
     p.setFont(tickFont);
     p.setPen(QColor(60, 60, 60));
     const int tickCount = 10;
@@ -462,7 +453,8 @@ void PlotWidget::updateBackgroundCache()
         double dataX = m_currentXMin + i * xTickStep;
         double pixelX = marginL + (i / (double)tickCount) * plotW;
         p.drawLine(QPointF(pixelX, h - marginB), QPointF(pixelX, h - marginB + 8));
-        p.drawText(QRectF(pixelX - 30, h - marginB + 10, 60, 20), Qt::AlignCenter, QString::number(dataX, 'g', 6));
+        p.drawText(QRectF(pixelX - 45, h - marginB + 10, 90, tickFm.height() + 6),
+                   Qt::AlignCenter, QString::number(dataX, 'g', 6));
     }
 
     double yTickStep = yRange / tickCount;
@@ -470,8 +462,71 @@ void PlotWidget::updateBackgroundCache()
         double dataY = m_currentYMin + i * yTickStep;
         double pixelY = h - marginB - (i / (double)tickCount) * plotH;
         p.drawLine(QPointF(marginL, pixelY), QPointF(marginL - 8, pixelY));
-        p.drawText(QRectF(marginL - 70, pixelY - 10, 60, 20), Qt::AlignRight, QString::number(dataY, 'g', 5));
+        p.drawText(QRectF(labelFm.height() + 18, pixelY - tickFm.height() / 2.0,
+                          marginL - labelFm.height() - 32, tickFm.height() + 6),
+                   Qt::AlignRight | Qt::AlignVCenter, QString::number(dataY, 'g', 5));
     }
+}
+
+QPolygonF PlotWidget::buildVisiblePolyline(int curveIdx, const PlotData& data, const QRectF& plotRect, double xRange, double yRange) const
+{
+    QPolygonF poly;
+    const int total = data.yData.size();
+    if (total < 2 || xRange <= 0.0 || yRange <= 0.0) return poly;
+
+    int first = qMax(0, static_cast<int>(std::floor(m_currentXMin)) - 1);
+    int last = qMin(total - 1, static_cast<int>(std::ceil(m_currentXMax)) + 1);
+    if (last <= first) return poly;
+
+    auto toPoint = [&](int idx) {
+        double x = idx;
+        double y = processYValue(curveIdx, data.yData[idx]);
+        double tx = (x - m_currentXMin) / xRange;
+        double ty = (y - m_currentYMin) / yRange;
+        return QPointF(plotRect.left() + tx * plotRect.width(),
+                       plotRect.bottom() - ty * plotRect.height());
+    };
+
+    int visibleCount = last - first + 1;
+    int maxPoints = qMax(1000, static_cast<int>(plotRect.width()) * 3);
+    if (visibleCount <= maxPoints) {
+        poly.reserve(visibleCount);
+        for (int i = first; i <= last; ++i) poly << toPoint(i);
+        return poly;
+    }
+
+    int bucketCount = qMax(1, static_cast<int>(plotRect.width()));
+    poly.reserve(bucketCount * 2 + 2);
+    poly << toPoint(first);
+
+    double pointsPerBucket = visibleCount / static_cast<double>(bucketCount);
+    for (int bucket = 0; bucket < bucketCount; ++bucket) {
+        int bucketStart = first + static_cast<int>(bucket * pointsPerBucket);
+        int bucketEnd = first + static_cast<int>((bucket + 1) * pointsPerBucket) - 1;
+        bucketStart = qBound(first, bucketStart, last);
+        bucketEnd = qBound(bucketStart, bucketEnd, last);
+
+        int minIdx = bucketStart;
+        int maxIdx = bucketStart;
+        double minY = processYValue(curveIdx, data.yData[bucketStart]);
+        double maxY = minY;
+        for (int i = bucketStart + 1; i <= bucketEnd; ++i) {
+            double y = processYValue(curveIdx, data.yData[i]);
+            if (y < minY) { minY = y; minIdx = i; }
+            if (y > maxY) { maxY = y; maxIdx = i; }
+        }
+
+        if (minIdx < maxIdx) {
+            poly << toPoint(minIdx) << toPoint(maxIdx);
+        } else if (maxIdx < minIdx) {
+            poly << toPoint(maxIdx) << toPoint(minIdx);
+        } else {
+            poly << toPoint(minIdx);
+        }
+    }
+
+    poly << toPoint(last);
+    return poly;
 }
 
 void PlotWidget::updateCurveCache()
@@ -491,60 +546,20 @@ void PlotWidget::updateCurveCache()
     double yRange = m_currentYMax - m_currentYMin;
     if (xRange <= 0 || yRange <= 0) return;
 
-    int heightCached = height();
     int curveIdx = 0;
+    QRectF plotRect(marginL, marginT, plotW, plotH);
 
     for (int i = 0; i < m_plotData.size(); ++i) {
         if (!m_plotData[i].visible) continue;
         const auto& d = m_plotData[i];
-        if (d.xData.size() < 2 || d.yData.size() < 2) continue;
+        if (d.yData.size() < 2) continue;
 
         QColor lineColor = m_curveColors[curveIdx % m_curveColors.size()];
         curveIdx++;
         p.setPen(QPen(lineColor, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(Qt::NoBrush);
 
-        QVector<double> localXData, localYData;
-        localXData.reserve(d.xData.size());
-        localYData.reserve(d.yData.size());
-        for (int j = 0; j < d.xData.size(); ++j) {
-            localXData.append(d.xData[j]);
-            localYData.append(processYValue(i, d.yData[j]));
-        }
-        if (localXData.isEmpty()) continue;
-
-        // 【修改】计算基于像素的误差阈值 (epsilon)
-        // 将数据坐标转换为屏幕坐标尺度，确保小于1像素的偏差被忽略
-        double xScale = plotW / xRange;
-        double yScale = plotH / yRange;
-        
-        // 为了应用DP算法，我们需要先在数据坐标系下确定一个epsilon
-        // 这个epsilon对应屏幕上的0.5像素
-        // 注意：因为X和Y尺度不同，我们在采样前先不转换坐标，而是在DP算法内部计算距离时做映射
-        // 这里为了简化，我们先把所有点转为屏幕坐标，运行DP，然后再转回来？
-        // 不，这样精度损失。最好是修改DP算法支持权重。
-        // 最简单的修正：我们不限制最大点数，而是限制允许的最大像素误差 (0.5 px)
-        
-        // 步骤：1. 生成所有点的屏幕坐标
-        QVector<QPointF> screenPoints;
-        screenPoints.reserve(localXData.size());
-        for (int j = 0; j < localXData.size(); ++j) {
-            double tx = (localXData[j] - m_currentXMin) / xRange;
-            double ty = (localYData[j] - m_currentYMin) / yRange;
-            screenPoints.append(QPointF(marginL + tx * plotW, heightCached - marginB - ty * plotH));
-        }
-
-        // 步骤：2. 在屏幕坐标下进行DP抽样，阈值设为 0.5 像素
-        QVector<QPointF> sampledScreenPoints;
-        sampledScreenPoints.reserve(screenPoints.size());
-        douglasPeucker(screenPoints, 0, screenPoints.size() - 1, 0.5, sampledScreenPoints);
-
-        // 步骤：3. 直接绘制抽样后的屏幕坐标点
-        QPolygonF poly;
-        poly.reserve(sampledScreenPoints.size());
-        for (const auto& pt : sampledScreenPoints) {
-            poly << pt;
-        }
+        QPolygonF poly = buildVisiblePolyline(i, d, plotRect, xRange, yRange);
         if (!poly.isEmpty()) p.drawPolyline(poly);
     }
 }
@@ -572,7 +587,7 @@ void PlotWidget::updateLegendCache()
     m_checkBoxRects.clear();
     
     for (const auto& d : m_plotData) {
-        if (d.xData.isEmpty()) continue;
+        if (d.yData.isEmpty()) continue;
         QColor c = m_curveColors[curveIdx % m_curveColors.size()];
         curveIdx++;
         int legendX = w - marginR + 20;
@@ -610,17 +625,15 @@ void PlotWidget::updateLegendCache()
     }
 }
 
-double PlotWidget::interpolateY(const QVector<double>& xData, const QVector<double>& yData, double targetX)
+double PlotWidget::interpolateY(const QVector<double>& yData, double targetX)
 {
-    if (xData.isEmpty() || yData.isEmpty() || xData.size() != yData.size()) return 0.0;
-    if (targetX <= xData.first()) return yData.first();
-    if (targetX >= xData.last()) return yData.last();
+    if (yData.isEmpty()) return 0.0;
+    if (targetX <= 0.0) return yData.first();
+    if (targetX >= yData.size() - 1) return yData.last();
 
-    int i = 0;
-    while (i < xData.size() && xData[i] < targetX) ++i;
-    if (i == 0 || i == xData.size()) return 0.0;
-
-    double x1 = xData[i-1], x2 = xData[i];
+    int i = qBound(1, static_cast<int>(std::ceil(targetX)), yData.size() - 1);
+    double x1 = i - 1;
+    double x2 = i;
     double y1 = yData[i-1], y2 = yData[i];
     return y1 + (y2 - y1) * (targetX - x1) / (x2 - x1);
 }
@@ -659,7 +672,7 @@ void PlotWidget::mousePressEvent(QMouseEvent *event)
         int marginL, marginT, marginR, marginB, plotW, plotH;
         getPlotRect(marginL, marginT, marginR, marginB, plotW, plotH);
         QRect plotRect(marginL, marginT, plotW, plotH);
-        if (plotRect.contains(event->pos())) {
+        if (m_zoomEnabled && plotRect.contains(event->pos())) {
             m_dragStart = event->pos();
             m_dragEnd = m_dragStart;
             m_isDragging = true;
@@ -722,19 +735,17 @@ void PlotWidget::mouseReleaseEvent(QMouseEvent *event)
         dragEnd.setX(qBound(plotRect.left(), dragEnd.x(), plotRect.right()));
         dragEnd.setY(qBound(plotRect.top(), dragEnd.y(), plotRect.bottom()));
 
-        QPoint start = plotRect.contains(m_dragStart) ? m_dragStart : plotRect.center();
-        QPoint end = plotRect.contains(dragEnd) ? dragEnd : plotRect.center();
-
-        if (qAbs(end.x() - start.x()) < 5 || qAbs(end.y() - start.y()) < 5)
-        {
+        QRect selectedRect(m_dragStart, dragEnd);
+        selectedRect = selectedRect.normalized().intersected(plotRect);
+        if (selectedRect.width() < 5 || selectedRect.height() < 5) {
             m_dragStart = QPoint();
             m_dragEnd = QPoint();
             update();
             return;
         }
 
-        if (start.x() > end.x()) std::swap(start.rx(), end.rx());
-        if (start.y() > end.y()) std::swap(start.ry(), end.ry());
+        QPoint start = selectedRect.topLeft();
+        QPoint end = selectedRect.bottomRight();
 
         double xRange = m_currentXMax - m_currentXMin;
         double yRange = m_currentYMax - m_currentYMin;
@@ -806,16 +817,17 @@ void PlotWidget::paintEvent(QPaintEvent*)
         tipFont.setStyleStrategy(QFont::PreferAntialias);
         p.setFont(tipFont);
 
-        int curveIdx = 0;
-        for (const auto& d : m_plotData) {
+        int colorIdx = 0;
+        for (int curveIdx = 0; curveIdx < m_plotData.size(); ++curveIdx) {
+            const auto& d = m_plotData[curveIdx];
             if (!d.visible) continue;
-            if (d.xData.isEmpty() || d.yData.size() != d.xData.size()) continue;
-            QColor curveColor = m_curveColors[curveIdx % m_curveColors.size()];
-            curveIdx++;
+            if (d.yData.isEmpty()) continue;
+            QColor curveColor = m_curveColors[colorIdx % m_curveColors.size()];
+            colorIdx++;
 
-            double clampedX = qBound(d.xData.first(), targetX, d.xData.last());
-            double rawY = interpolateY(d.xData, d.yData, clampedX);
-            double realY = processYValue(&d - &m_plotData[0], rawY);
+            double clampedX = qBound(0.0, targetX, static_cast<double>(d.yData.size() - 1));
+            double rawY = interpolateY(d.yData, clampedX);
+            double realY = processYValue(curveIdx, rawY);
             double realX = targetX;
 
             double tx = (realX - m_currentXMin) / xRange;
@@ -862,9 +874,22 @@ void PlotWidget::paintEvent(QPaintEvent*)
     }
 }
 
-PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData)
+PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData,
+                       const QVector<QVector<double>>* sourceNumericData,
+                       const QVector<QVector<uchar>>* sourceNumericValidData,
+                       const QVector<int>* sourceCols,
+                       const QHash<int, int>* sourceColIndexMap,
+                       const QMap<int, int>* colGroupMap,
+                       int startRow, int endRow)
     : QDialog(parent)
     , m_zoomMode(false)
+    , m_sourceNumericData(sourceNumericData)
+    , m_sourceNumericValidData(sourceNumericValidData)
+    , m_sourceCols(sourceCols)
+    , m_sourceColIndexMap(sourceColIndexMap)
+    , m_colGroupMap(colGroupMap)
+    , m_startRow(startRow)
+    , m_endRow(endRow)
 {
     plotWindowCounter++;
     setWindowTitle(QString("画布%1").arg(plotWindowCounter));
@@ -874,10 +899,14 @@ PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData)
                    Qt::WindowMaximizeButtonHint | Qt::WindowMinimizeButtonHint | Qt::WindowCloseButtonHint);
     setModal(false);
 
-    m_zoomBtn = new QPushButton("放大（框选区域）", this);
+    m_zoomMode = true;
+
+    m_zoomBtn = new QPushButton("取消放大", this);
     m_resetBtn = new QPushButton("还原视图", this);
     m_hideAllBtn = new QPushButton("隐藏全部", this);
     m_showAllBtn = new QPushButton("显示全部", this);
+    m_shiftLeftBtn = new QPushButton("←", this);
+    m_shiftRightBtn = new QPushButton("→", this);
     m_scaleLabel = new QLabel("Y轴缩放：", this);
     m_curveCombo = new QComboBox(this);
     m_scaleEdit = new QLineEdit("1.0", this);
@@ -901,6 +930,13 @@ PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData)
     m_resetBtn->setStyleSheet(btnStyle);
     m_hideAllBtn->setStyleSheet(btnStyle);
     m_showAllBtn->setStyleSheet(btnStyle);
+    m_shiftLeftBtn->setStyleSheet(btnStyle);
+    m_shiftRightBtn->setStyleSheet(btnStyle);
+    m_shiftLeftBtn->setToolTip("所有当前曲线列号 -1 后重绘");
+    m_shiftRightBtn->setToolTip("所有当前曲线列号 +1 后重绘");
+    m_zoomBtn->setToolTip("快捷键 Z：开启/关闭框选放大");
+    m_shiftLeftBtn->setFixedWidth(48);
+    m_shiftRightBtn->setFixedWidth(48);
     m_applyScaleBtn->setStyleSheet(btnStyle);
     m_scaleLabel->setStyleSheet("font: 10pt 'Microsoft YaHei'; margin: 0 4px;");
     m_curveCombo->setStyleSheet("font: 10pt 'Microsoft YaHei'; padding: 4px; margin: 0 4px; min-width: 120px;");
@@ -910,6 +946,8 @@ PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData)
     connect(m_resetBtn, &QPushButton::clicked, this, &PlotDialog::onResetClicked);
     connect(m_hideAllBtn, &QPushButton::clicked, this, &PlotDialog::onHideAllClicked);
     connect(m_showAllBtn, &QPushButton::clicked, this, &PlotDialog::onShowAllClicked);
+    connect(m_shiftLeftBtn, &QPushButton::clicked, this, &PlotDialog::onShiftLeftClicked);
+    connect(m_shiftRightBtn, &QPushButton::clicked, this, &PlotDialog::onShiftRightClicked);
     connect(m_applyScaleBtn, &QPushButton::clicked, this, &PlotDialog::onApplyScaleClicked);
     connect(m_curveCombo, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), 
             this, [this](int index) {
@@ -925,12 +963,16 @@ PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData)
         m_scaleEdit->setText(QString::number(m_plotWidget->m_plotData[0].yScale, 'g', 3));
     }
     connect(m_plotWidget, &PlotWidget::curveInvertClicked, this, &PlotDialog::onCurveInvertClicked);
+    m_plotWidget->setZoomEnabled(m_zoomMode);
+    setCursor(Qt::CrossCursor);
 
     QHBoxLayout* btnLayout = new QHBoxLayout;
     btnLayout->addWidget(m_zoomBtn);
     btnLayout->addWidget(m_resetBtn);
     btnLayout->addWidget(m_hideAllBtn);
     btnLayout->addWidget(m_showAllBtn);
+    btnLayout->addWidget(m_shiftLeftBtn);
+    btnLayout->addWidget(m_shiftRightBtn);
     btnLayout->addStretch();
     btnLayout->addWidget(m_scaleLabel);
     btnLayout->addWidget(m_curveCombo);
@@ -948,8 +990,22 @@ PlotDialog::PlotDialog(QWidget *parent, const QList<PlotData>& plotData)
     m_resetBtn->setFocusPolicy(Qt::NoFocus);
     m_hideAllBtn->setFocusPolicy(Qt::NoFocus);
     m_showAllBtn->setFocusPolicy(Qt::NoFocus);
+    m_shiftLeftBtn->setFocusPolicy(Qt::NoFocus);
+    m_shiftRightBtn->setFocusPolicy(Qt::NoFocus);
     m_applyScaleBtn->setFocusPolicy(Qt::NoFocus);
     setFocusProxy(m_plotWidget);
+
+    QShortcut* zoomShortcut = new QShortcut(QKeySequence(Qt::Key_Z), this);
+    zoomShortcut->setContext(Qt::WindowShortcut);
+    connect(zoomShortcut, &QShortcut::activated, this, &PlotDialog::onZoomInClicked);
+
+    QShortcut* closeReturnShortcut = new QShortcut(QKeySequence(Qt::Key_Return), this);
+    closeReturnShortcut->setContext(Qt::WindowShortcut);
+    connect(closeReturnShortcut, &QShortcut::activated, this, &QDialog::close);
+
+    QShortcut* closeEnterShortcut = new QShortcut(QKeySequence(Qt::Key_Enter), this);
+    closeEnterShortcut->setContext(Qt::WindowShortcut);
+    connect(closeEnterShortcut, &QShortcut::activated, this, &QDialog::close);
 }
 
 PlotDialog::~PlotDialog() {}
@@ -964,6 +1020,7 @@ void PlotDialog::onZoomInClicked()
         m_zoomBtn->setText("放大（框选区域）");
         setCursor(Qt::ArrowCursor);
     }
+    m_plotWidget->setZoomEnabled(m_zoomMode);
 }
 
 void PlotDialog::onResetClicked()
@@ -971,6 +1028,7 @@ void PlotDialog::onResetClicked()
     m_zoomMode = false;
     m_zoomBtn->setText("放大（框选区域）");
     setCursor(Qt::ArrowCursor);
+    m_plotWidget->setZoomEnabled(false);
     m_plotWidget->resetView();
 }
 
@@ -982,6 +1040,83 @@ void PlotDialog::onHideAllClicked()
 void PlotDialog::onShowAllClicked()
 {
     m_plotWidget->setAllCurvesVisible(true);
+}
+
+void PlotDialog::onShiftLeftClicked()
+{
+    shiftCurves(-1);
+}
+
+void PlotDialog::onShiftRightClicked()
+{
+    shiftCurves(1);
+}
+
+void PlotDialog::shiftCurves(int delta)
+{
+    QList<PlotData> shiftedData;
+    QString errorMessage;
+    if (!buildShiftedPlotData(delta, shiftedData, errorMessage)) {
+        QMessageBox::information(this, "提示", errorMessage);
+        return;
+    }
+
+    int currentCurveIdx = m_curveCombo->currentIndex();
+    m_plotWidget->setData(shiftedData, false);
+    m_curveCombo->clear();
+    m_curveCombo->addItems(m_plotWidget->getCurveLabels());
+    if (!m_plotWidget->m_plotData.isEmpty()) {
+        currentCurveIdx = qBound(0, currentCurveIdx, m_plotWidget->m_plotData.size() - 1);
+        m_curveCombo->setCurrentIndex(currentCurveIdx);
+        m_scaleEdit->setText(QString::number(m_plotWidget->m_plotData[currentCurveIdx].yScale, 'g', 3));
+    }
+}
+
+bool PlotDialog::buildShiftedPlotData(int delta, QList<PlotData>& shiftedData, QString& errorMessage) const
+{
+    if (!m_sourceNumericData || !m_sourceNumericValidData || !m_sourceCols || !m_sourceColIndexMap ||
+        m_sourceNumericData->isEmpty() || m_sourceNumericValidData->isEmpty() || m_sourceCols->isEmpty()) {
+        errorMessage = "当前画布缺少原始数据，无法切换列";
+        return false;
+    }
+
+    int rowCount = m_sourceNumericData->size();
+    int start = qBound(0, m_startRow, rowCount - 1);
+    int end = m_endRow < 0 ? rowCount - 1 : qBound(0, m_endRow, rowCount - 1);
+    if (start > end) std::swap(start, end);
+
+    shiftedData.reserve(m_plotWidget->m_plotData.size());
+    for (const PlotData& oldData : m_plotWidget->m_plotData) {
+        int newRawColNum = oldData.rawColNum + delta;
+        int newColIndex = m_sourceColIndexMap->value(newRawColNum, -1);
+        if (newColIndex < 0) {
+            errorMessage = QString("目标列 %1 不在当前加载范围内，已保持原图").arg(newRawColNum);
+            return false;
+        }
+
+        PlotData newData = oldData;
+        newData.colIndex = newColIndex;
+        newData.rawColNum = newRawColNum;
+        newData.colLabel = QString::number(newRawColNum);
+        newData.groupIndex = m_colGroupMap ? m_colGroupMap->value(newRawColNum, oldData.groupIndex) : oldData.groupIndex;
+        newData.yData.clear();
+        newData.yData.reserve(end - start + 1);
+
+        for (int r = start; r <= end; ++r) {
+            double y = 0.0;
+            if (newColIndex < (*m_sourceNumericData)[r].size() &&
+                r < m_sourceNumericValidData->size() &&
+                newColIndex < (*m_sourceNumericValidData)[r].size() &&
+                (*m_sourceNumericValidData)[r][newColIndex]) {
+                y = (*m_sourceNumericData)[r][newColIndex];
+            }
+            newData.yData << y;
+        }
+
+        shiftedData << newData;
+    }
+
+    return !shiftedData.isEmpty();
 }
 
 void PlotDialog::onApplyScaleClicked()
@@ -1012,7 +1147,7 @@ void PlotDialog::onCurveInvertClicked(int curveIdx)
 
 int MainWindow::getColumnIndexByRawNum(int rawColNum) const
 {
-    return m_selectedReadCols.indexOf(rawColNum);
+    return m_colIndexByRawNum.value(rawColNum, -1);
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -1031,6 +1166,11 @@ MainWindow::MainWindow(QWidget *parent)
         }
     }
     m_selectedReadCols = selectedCols;
+    m_colIndexByRawNum.clear();
+    m_colIndexByRawNum.reserve(m_selectedReadCols.size());
+    for (int i = 0; i < m_selectedReadCols.size(); ++i) {
+        m_colIndexByRawNum.insert(m_selectedReadCols[i], i);
+    }
     m_colBindMap.clear();
     const int BIND_OFFSET = 21;
     for (int col = 357; col <= 389; ++col) {
@@ -1044,8 +1184,18 @@ MainWindow::MainWindow(QWidget *parent)
     initUI();
 
     QShortcut* enterShortcut = new QShortcut(QKeySequence(Qt::Key_Return), this);
-    enterShortcut->setContext(Qt::ApplicationShortcut);
+    enterShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(enterShortcut, &QShortcut::activated, this, [this]() {
+        if (m_currentPlotDialog) {
+            closeCurrentPlotDialog();
+        } else {
+            plotSelectedCols();
+        }
+    });
+
+    QShortcut* keypadEnterShortcut = new QShortcut(QKeySequence(Qt::Key_Enter), this);
+    keypadEnterShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(keypadEnterShortcut, &QShortcut::activated, this, [this]() {
         if (m_currentPlotDialog) {
             closeCurrentPlotDialog();
         } else {
@@ -1116,6 +1266,22 @@ void MainWindow::initUI()
     m_loadBtn = new QPushButton("加载TXT数据", this);
     m_plotBtn = new QPushButton("绘制选中列", this);
     m_multiPlotBtn = new QPushButton("多画布分组绘制", this);
+    m_jumpCheckBox = new QCheckBox("连选跳转", this);
+    m_jumpSpinBox = new QSpinBox(this);
+    m_jumpSpinBox->setEnabled(false);
+    m_jumpSpinBox->setRange(1, 99999);
+    m_jumpSpinBox->setValue(1);
+    m_jumpSpinBox->setStyleSheet(R"(
+        QSpinBox {
+            font: 12pt Monospace;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            min-width: 80px;
+        }
+    )");
+    m_jumpCheckBox->setStyleSheet("font: 12pt Monospace;");
+    connect(m_jumpCheckBox, &QCheckBox::toggled, m_jumpSpinBox, &QSpinBox::setEnabled);
     m_startRowSpin = new QSpinBox(this);
     QLabel* lbl = new QLabel("起始行：", this);
     
@@ -1185,6 +1351,8 @@ void MainWindow::initUI()
     topLay->addWidget(m_plotBtn);
     topLay->addWidget(m_multiPlotBtn);
     topLay->addStretch();
+    topLay->addWidget(m_jumpCheckBox);
+    topLay->addWidget(m_jumpSpinBox);
     topLay->addWidget(m_colInputLbl);
     topLay->addWidget(m_colInputEdit);
     topLay->addSpacing(20);
@@ -1202,6 +1370,9 @@ void MainWindow::initUI()
     connect(m_plotBtn, &QPushButton::clicked, this, &MainWindow::plotSelectedCols);
     connect(m_multiPlotBtn, &QPushButton::clicked, this, &MainWindow::plotMultiCanvasByCode);
     connect(m_colInputEdit, &QLineEdit::editingFinished, this, &MainWindow::onColInputEditingFinished);
+    connect(m_colInputEdit, &QLineEdit::returnPressed, this, [this]() {
+        QTimer::singleShot(0, this, &MainWindow::plotSelectedCols);
+    });
     connect(m_checkableHeader, &CheckableHeaderView::checkStateChanged, this, &MainWindow::onHeaderCheckStateChanged);
 }
 
@@ -1234,7 +1405,7 @@ QVector<int> MainWindow::calculateColMaxWidth() const
     for (int r = 0; r < maxSample; ++r) {
         const auto& row = m_rawData[r];
         for (int c = 0; c < cols && c < row.size(); ++c) {
-            int w = fm.horizontalAdvance(row[c]) + 90;
+            int w = textWidth(fm, row[c]) + 90;
             if (w > res[c]) res[c] = w;
         }
     }
@@ -1247,7 +1418,7 @@ QVector<int> MainWindow::parseColInput(const QString& text)
     if (text.isEmpty()) return result;
 
     QString cleanText = text.trimmed().replace(" ", ",");
-    QStringList parts = cleanText.split(",", QString::SkipEmptyParts);
+    QStringList parts = cleanText.split(",", TXT_VIEWER_SKIP_EMPTY_PARTS);
 
     for (const QString& part : parts) {
         bool ok;
@@ -1350,11 +1521,19 @@ void MainWindow::loadTxt()
     timer.start();
 
     QTextStream ts(&f);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    ts.setEncoding(QStringConverter::Utf8);
+#else
     ts.setCodec("UTF-8");
+#endif
 
     QVector<QVector<QString>> data;
+    QVector<QVector<double>> numericData;
+    QVector<QVector<uchar>> numericValidData;
     const int BATCH_ROWS = 2000;
     data.reserve(BATCH_ROWS);
+    numericData.reserve(BATCH_ROWS);
+    numericValidData.reserve(BATCH_ROWS);
     qint64 fileTotalSize = f.size();
     qint64 fileReadSize = 0;
 
@@ -1373,17 +1552,36 @@ void MainWindow::loadTxt()
         line = line.trimmed();
         if (line.isEmpty()) continue;
 
-        QStringList parts = line.split(QRegExp("\\s+"), QString::SkipEmptyParts);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        static const QRegularExpression whitespaceRe("\\s+");
+        QStringList parts = line.split(whitespaceRe, TXT_VIEWER_SKIP_EMPTY_PARTS);
+#else
+        static const QRegExp whitespaceRe("\\s+");
+        QStringList parts = line.split(whitespaceRe, TXT_VIEWER_SKIP_EMPTY_PARTS);
+#endif
         QVector<QString> rowData;
+        QVector<double> rowNumericData;
+        QVector<uchar> rowNumericValidData;
         rowData.reserve(m_selectedReadCols.size());
+        rowNumericData.reserve(m_selectedReadCols.size());
+        rowNumericValidData.reserve(m_selectedReadCols.size());
         for (int col : m_selectedReadCols) {
             int idx = col - 1;
-            rowData.append((idx >= 0 && idx < parts.size()) ? parts[idx] : "");
+            QString value = (idx >= 0 && idx < parts.size()) ? parts[idx] : "";
+            bool ok = false;
+            double numericValue = value.toDouble(&ok);
+            rowData.append(value);
+            rowNumericData.append(ok ? numericValue : 0.0);
+            rowNumericValidData.append(ok ? 1 : 0);
         }
         data.append(rowData);
+        numericData.append(rowNumericData);
+        numericValidData.append(rowNumericValidData);
 
         if (data.size() % BATCH_ROWS == 0) {
             data.reserve(data.size() + BATCH_ROWS);
+            numericData.reserve(numericData.size() + BATCH_ROWS);
+            numericValidData.reserve(numericValidData.size() + BATCH_ROWS);
             int readProgress = qMin((int)((fileReadSize * 50) / fileTotalSize), 50);
             progress.setValue(readProgress);
             progress.setLabelText(QString("正在读取文件...（仅处理指定列，已读%1%）").arg(readProgress * 2));
@@ -1414,21 +1612,22 @@ void MainWindow::loadTxt()
             return;
         }
 
-        QVector<double> vals;
-        vals.reserve(rows);
-        for (int r = 0; r < rows; ++r) {
-            const QString& s = data[r][c];
-            if (!s.isEmpty() && isNumber(s)) vals.append(s.toDouble());
+        int lastValidRow = -1;
+        for (int r = rows - 1; r >= 0; --r) {
+            if (c < numericValidData[r].size() && numericValidData[r][c]) {
+                lastValidRow = r;
+                break;
+            }
         }
-        if (vals.size() < 2) continue;
+        if (lastValidRow <= 0) continue;
 
-        double last = vals.last();
-        int start = vals.size() - 1;
-        for (int i = vals.size() - 2; i >= 0; --i) {
-            if (qFuzzyCompare(vals[i], last)) start = i;
+        double last = numericData[lastValidRow][c];
+        int start = lastValidRow;
+        for (int r = lastValidRow - 1; r >= 0; --r) {
+            if (c < numericValidData[r].size() && numericValidData[r][c] && qFuzzyCompare(numericData[r][c], last)) start = r;
             else break;
         }
-        if (start < vals.size() - 1) redRows[c] = start;
+        if (start < lastValidRow) redRows[c] = start;
 
         int redProgress = 60 + qMin((int)((c * 30) / cols), 30);
         progress.setValue(redProgress);
@@ -1436,9 +1635,11 @@ void MainWindow::loadTxt()
 
     progress.setValue(90);
     progress.setLabelText("正在初始化表格...（设置列宽+绑定模型）");
+    m_rawData = std::move(data);
+    m_numericData = std::move(numericData);
+    m_numericValidData = std::move(numericValidData);
     QVector<int> widths = calculateColMaxWidth();
-    m_tableModel->setData(data, redRows, m_selectedReadCols);
-    m_rawData = data;
+    m_tableModel->setData(&m_rawData, redRows, m_selectedReadCols);
     for (int c = 0; c < cols && c < widths.size(); ++c) {
         m_tableView->setColumnWidth(c, widths[c]);
     }
@@ -1495,10 +1696,14 @@ void MainWindow::plotSelectedCols()
         pd.yScale = 1.0;
         pd.visible = true;
         
+        pd.yData.reserve(end - start + 1);
         for (int r = start; r <= end; ++r) {
-            double x = r - start;
-            double y = isNumber(m_rawData[r][idx]) ? m_rawData[r][idx].toDouble() : 0.0;
-            pd.xData << x;
+            double y = 0.0;
+            if (r < m_numericData.size() && idx < m_numericData[r].size() &&
+                r < m_numericValidData.size() && idx < m_numericValidData[r].size() &&
+                m_numericValidData[r][idx]) {
+                y = m_numericData[r][idx];
+            }
             pd.yData << y;
         }
         list << pd;
@@ -1509,7 +1714,11 @@ void MainWindow::plotSelectedCols()
         return;
     }
 
-    PlotDialog* dlg = new PlotDialog(this, list);
+    PlotDialog* dlg = new PlotDialog(this, list, &m_numericData, &m_numericValidData, &m_selectedReadCols, &m_colIndexByRawNum, &m_colToGroupIndex, start, end);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dlg, &QObject::destroyed, this, [this, dlg]() {
+        if (m_currentPlotDialog == dlg) m_currentPlotDialog = nullptr;
+    });
     dlg->show();
     m_currentPlotDialog = dlg;
 
@@ -1543,7 +1752,7 @@ void MainWindow::plotMultiCanvasByCode()
         
         QList<PlotData> list;
         for (int colNum : groupColList) {
-            int idx = m_selectedReadCols.indexOf(colNum);
+            int idx = getColumnIndexByRawNum(colNum);
             if (idx == -1 || idx >= cols) continue;
 
             PlotData pd;
@@ -1555,10 +1764,14 @@ void MainWindow::plotMultiCanvasByCode()
             pd.yScale = 1.0;
             pd.visible = true;
             
+            pd.yData.reserve(end - start + 1);
             for (int r = start; r <= end; ++r) {
-                double x = r - start;
-                double y = isNumber(m_rawData[r][idx]) ? m_rawData[r][idx].toDouble() : 0.0;
-                pd.xData << x;
+                double y = 0.0;
+                if (r < m_numericData.size() && idx < m_numericData[r].size() &&
+                    r < m_numericValidData.size() && idx < m_numericValidData[r].size() &&
+                    m_numericValidData[r][idx]) {
+                    y = m_numericData[r][idx];
+                }
                 pd.yData << y;
             }
             list << pd;
@@ -1566,7 +1779,8 @@ void MainWindow::plotMultiCanvasByCode()
 
         if (list.isEmpty()) continue;
         
-        PlotDialog* dlg = new PlotDialog(this, list);
+        PlotDialog* dlg = new PlotDialog(this, list, &m_numericData, &m_numericValidData, &m_selectedReadCols, &m_colIndexByRawNum, &m_colToGroupIndex, start, end);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->setWindowTitle(QString("分组画布%1（组%2）").arg(++off).arg(groupIdx));
         dlg->show();
     }

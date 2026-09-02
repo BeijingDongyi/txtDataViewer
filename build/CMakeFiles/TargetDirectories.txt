@@ -1,0 +1,4 @@
+/home/zhx/图片/txtDataViewer_super/txtDataViewer/build/CMakeFiles/main.dir
+/home/zhx/图片/txtDataViewer_super/txtDataViewer/build/CMakeFiles/edit_cache.dir
+/home/zhx/图片/txtDataViewer_super/txtDataViewer/build/CMakeFiles/rebuild_cache.dir
+/home/zhx/图片/txtDataViewer_super/txtDataViewer/build/CMakeFiles/main_autogen.dir
